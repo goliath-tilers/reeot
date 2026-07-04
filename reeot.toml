@@ -1,0 +1,9 @@
+# Auto-generated cvar configuration
+gpu_allow_invalid_fetch_constants = true
+occlusion_query_enable = false
+readback_memexport = false
+readback_memexport_fast = false
+execute_unclipped_draw_vs_on_cpu = true
+execute_unclipped_draw_vs_on_cpu_with_scissor = true
+mnk_mode = true
+game_data_root = "C:\Users\rieng\Documents\GitHub\reeot\assets"
