@@ -1,6 +1,8 @@
 > [!CAUTION]
 > This project is in early development. It currently does not display a screen, due to a number of issues, but the dev team of the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) are working on making fixes, and hopefully we'll be able to see more progress soon :D
 
+<img width="1100" height="330" alt="Comp_1_0-00-00-00" src="https://github.com/user-attachments/assets/e4bca27a-b84f-463b-bb25-52c8c78fb4c5" />
+
 # EdgeOfTime-Recompiled
 
 EdgeOfTime-Recompiled (codenamed "reeot") is an unofficial PC port of the Xbox 360 version of "Spider-Man: Edge Of Time" created through the process of static recompilation. The port offers Windows, macOS, and Linux support with goals for numerous built-in enhancements such as high resolutions, ultrawide support, high frame rates, improved performance and modding.
