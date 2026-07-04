@@ -28,6 +28,14 @@ https://github.com/user-attachments/assets/95bbe327-8363-4dbc-96ef-e0079e6e0a73
 
 [Recomp Discord Server](https://discord.gg/s9JwT3kHZd) - Easiest way to connect with the development team of this project
 
+# Contributions
+### What we need
+At the moment, contributions to this repository are paused, given the fact that the project is NOT in a releasable state. If you wish to contribute to reeot, we desperately need people who have experience in Graphics Programming and Graphics debugging, as well as people who are experienced in reversing the game's PowerPC assembly. RenderDoc and IDA Pro are a must.
+
+### AI Usage
+Whilst the codegen, ReXGlue SDK, and overall current setup/mods were made by hand, I would not have been able to get my rendering implementation without the help of many talented individuals at the ReXGlue team. I have no problems with using AI for this project, but I do **require that everyone who contributes has a strong understanding of what they're getting into**. This repository has been setup in a way that will not allow individuals to AI generate nonsense and push it upstream. I do not plan on vibecoding this entire system as I am very passionate about the game, and I want others to enjoy it as much as I have and be able to use the knowledge learnt from reversing on other titles with a similar setup. 
+
+Do **NOT** make pull requests spearheading with an LLM, or spam issues with information provided by one of the many providers. I would prefer to see human reports as to what is going wrong, and how you've approached the sitation. I plan on detailing the process of how to build the system and how to use it/report issues properly. I appreciate everyone who's been along for the ride, and wish to continue building this piece-by-piece :)
 
 # Credits
 
