@@ -9,6 +9,10 @@ EdgeOfTime-Recompiled (codenamed "reeot") is an unofficial PC port of the Xbox 3
 
 EdgeOfTime-Recompiled uses the ReXGlue SDK to convert PowerPC Assembly to static C++ code that can be compiled to any platform, with a custom XenosRecomp fork to convert Xbox 360 Shaders from the compiled shader container to static HLSL code. Given that the system is currently in development, there are no recommended or minimum settings designed at the moment, and no playtesters to confirm or deny any settings. As mentioned in rules, ***THERE IS NO OFFICIAL RELEASE AS OF JULY 2026, DO NOT TRUST ANYONE CLAIMING THEY HAVE A PC PORT***
 
+## Contact
+
+[Recomp Discord Server](https://discord.gg/PsReBEDDZX) - Easiest way to connect with the development team of this project
+
 # TODO
 
 ## Situation: Repository is DNI
@@ -23,10 +27,6 @@ Due to this significant constraint, the development team of EdgeOfTime-Recompile
 
 https://github.com/user-attachments/assets/95bbe327-8363-4dbc-96ef-e0079e6e0a73
 
-
-## Contact
-
-[Recomp Discord Server](https://discord.gg/s9JwT3kHZd) - Easiest way to connect with the development team of this project
 
 # Contributions
 ### What we need
