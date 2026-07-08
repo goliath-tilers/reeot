@@ -6,7 +6,9 @@
 
 project_name = "reeot"
 file_path = "assets/Data/GameLogic.dll"
+patch_file_path = "assets/Update/Data/GameLogic.dllp"
 out_directory_path = "generated/gamelogic"
+is_dll = true
 
 # [rexcrt]
 # Heap
