@@ -1,3 +1,15 @@
 [submodule "res"]
 	path = res
 	url = https://github.com/goliath-tilers/reeot-resources.git
+[submodule "thirdparty/nativefiledialog-extended"]
+	path = thirdparty/nativefiledialog-extended
+	url = https://github.com/btzy/nativefiledialog-extended.git
+[submodule "thirdparty/ddspp"]
+	path = thirdparty/ddspp
+	url = https://github.com/redorav/ddspp.git
+[submodule "thirdparty/libmspack"]
+	path = thirdparty/libmspack
+	url = https://github.com/kyz/libmspack
+[submodule "thirdparty/tiny-AES-c"]
+	path = thirdparty/tiny-AES-c
+	url = https://github.com/kokke/tiny-AES-c.git
