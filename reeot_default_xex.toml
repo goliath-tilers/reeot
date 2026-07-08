@@ -8,6 +8,7 @@
 project_name = "reeot"
 file_path = "assets/Default.xex"
 patch_file_path = "assets/Update/Default.xexp"
+patched_file_path = "assets/Default_Patched.xex"
 out_directory_path = "generated/default"
 
 [rexcrt]

@@ -7,6 +7,7 @@
 project_name = "reeot"
 file_path = "assets/Data/GameLogic.dll"
 patch_file_path = "assets/Update/Data/GameLogic.dllp"
+patched_file_path = "assets/Data/GameLogic_Patched.dll"
 out_directory_path = "generated/gamelogic"
 is_dll = true
 
@@ -34,6 +35,8 @@ is_dll = true
 0x882F3338 = { size = 0x10}
 0x88260CC8 = {}
 0x88120340 = {}
+0x882F3388 = {}
+0x8821FB30 = {}
 
 # IDA Generated
 0x880A0040 = { name = "eot_GameLogic_0001", size = 0x6EF0 }
