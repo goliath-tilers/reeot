@@ -254,7 +254,6 @@ class IsoSourceVfs final : public MapSourceVfs {
           std::memcmp(magic.data(), kMagic, std::strlen(kMagic)) == 0) {
         game_offset = offset;
         magic_found = true;
-        break;
       }
     }
     if (!magic_found) {
@@ -380,12 +379,16 @@ class StfsSourceVfs final : public MapSourceVfs {
   static constexpr uint32_t kEndOfChain = 0xFFFFFF;
   static constexpr uint32_t kBlocksPerHashLevel0 = 170;
   static constexpr uint32_t kBlocksPerHashLevel1 = 28900;
+  static constexpr uint32_t kBlocksPerHashLevel2 = 4913000;
 
   uint64_t BlockOffset(uint64_t block_index) const {
     uint64_t block = block_index;
     block += ((block_index + kBlocksPerHashLevel0) / kBlocksPerHashLevel0);
     if (block_index >= kBlocksPerHashLevel0) {
       block += ((block_index + kBlocksPerHashLevel1) / kBlocksPerHashLevel1);
+      if (block_index >= kBlocksPerHashLevel1) {
+        block += ((block_index + kBlocksPerHashLevel2) / kBlocksPerHashLevel2);
+      }
     }
     return base_offset_ + (block << 12);
   }

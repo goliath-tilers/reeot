@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -457,6 +459,48 @@ std::filesystem::path FindDlcRoot(const std::filesystem::path& selected) {
   return {};
 }
 
+// Tracks the top-level directories an install run has (re)created from
+// scratch, so a failed or cancelled run can be rolled back to the
+// pre-install state by deleting each one wholesale.
+struct InstallJournal {
+  std::vector<std::filesystem::path> created_roots;
+};
+
+void RecordInstallRoot(InstallJournal* journal, std::filesystem::path root) {
+  if (journal) {
+    journal->created_roots.push_back(std::move(root));
+  }
+}
+
+void RollbackInstall(const InstallJournal& journal) {
+  std::error_code ec;
+  for (const auto& root : journal.created_roots) {
+    EOT_INFO("[installer-ui] rolling back {}", root.string());
+    std::filesystem::remove_all(root, ec);
+  }
+}
+
+// Shared between the UI thread and the background install thread: progress
+// and cancellation are polled every frame, so they must be atomic.
+struct InstallControl {
+  std::atomic<bool> cancel_requested{false};
+  std::atomic<bool> halted{false};
+  std::atomic<float> progress{0.0f};
+
+  // Returns false if the install should stop as soon as possible. Blocks
+  // while the UI is showing the "cancel installation?" confirmation so the
+  // copy doesn't race ahead of a decision the user hasn't made yet.
+  bool ShouldContinue() {
+    halted.wait(true);
+    return !cancel_requested.load();
+  }
+
+  void SetProgress(float range_start, float range_end, size_t done, size_t total) {
+    const float local = total > 0 ? static_cast<float>(done) / static_cast<float>(total) : 1.0f;
+    progress.store(range_start + (range_end - range_start) * local);
+  }
+};
+
 bool CopyOne(const std::filesystem::path& source, const char* relative,
              const std::filesystem::path& target_root, std::string* error) {
   const auto target = target_root / std::filesystem::path(relative);
@@ -523,6 +567,7 @@ bool CreateRelativeDirectorySymlink(const std::filesystem::path& target,
 
 bool CopySourceTree(const std::filesystem::path& source,
                     const std::filesystem::path& target_root,
+                    InstallControl* control, float progress_start, float progress_end,
                     std::string* error) {
   std::vector<SourceFileInfo> files;
   if (!ListSourceFiles(source, &files, error)) {
@@ -535,10 +580,17 @@ bool CopySourceTree(const std::filesystem::path& source,
 
   EOT_INFO("[installer-ui] copying source tree source={} target={} files={} bytes={}",
            source.string(), target_root.string(), files.size(), SourceTotalSize(source));
-  for (const auto& file : files) {
-    const auto relative = CanonicalInstallRelative(file.path);
+  for (size_t i = 0; i < files.size(); ++i) {
+    if (control && !control->ShouldContinue()) {
+      *error = "Installation was cancelled.";
+      return false;
+    }
+    const auto relative = CanonicalInstallRelative(files[i].path);
     if (!CopyOne(source, relative.c_str(), target_root, error)) {
       return false;
+    }
+    if (control) {
+      control->SetProgress(progress_start, progress_end, i + 1, files.size());
     }
   }
   return true;
@@ -546,6 +598,8 @@ bool CopySourceTree(const std::filesystem::path& source,
 
 bool CopyDlcSource(const std::filesystem::path& source,
                    const InstallLayout& layout,
+                   InstallControl* control, InstallJournal* journal,
+                   float progress_start, float progress_end,
                    std::string* error) {
   if (source.empty()) {
     EOT_INFO("[installer-ui] no DLC source selected; skipping DLC install");
@@ -561,6 +615,7 @@ bool CopyDlcSource(const std::filesystem::path& source,
     *error = "Failed to clean DLC directory: " + ec.message();
     return false;
   }
+  RecordInstallRoot(journal, package_root);
 
   std::string hash_error;
   if (std::filesystem::is_regular_file(source, ec) &&
@@ -569,10 +624,16 @@ bool CopyDlcSource(const std::filesystem::path& source,
     return false;
   }
 
-  if (!CopySourceTree(source, package_root, error)) {
+  if (!CopySourceTree(source, package_root, control, progress_start, progress_end, error)) {
     return false;
   }
 
+  std::filesystem::remove_all(layout.dlc, ec);
+  if (ec) {
+    *error = "Failed to clean DLC directory: " + ec.message();
+    return false;
+  }
+  RecordInstallRoot(journal, layout.dlc);
   std::filesystem::create_directories(layout.dlc, ec);
   if (ec) {
     *error = "Failed to create DLC directory: " + ec.message();
@@ -594,6 +655,7 @@ bool CopyDlcSource(const std::filesystem::path& source,
 
 bool PreparePatchedDirectory(const std::filesystem::path& game_root,
                              const std::filesystem::path& target_root,
+                             InstallJournal* journal,
                              std::string* error) {
   std::error_code ec;
   std::filesystem::remove_all(target_root, ec);
@@ -601,6 +663,7 @@ bool PreparePatchedDirectory(const std::filesystem::path& game_root,
     *error = "Failed to clean patched directory: " + ec.message();
     return false;
   }
+  RecordInstallRoot(journal, target_root);
   std::filesystem::create_directories(target_root, ec);
   if (ec) {
     *error = "Failed to create patched directory: " + ec.message();
@@ -684,13 +747,21 @@ bool ApplyPatchFile(const std::filesystem::path& base,
 }
 
 bool CopyInstallSources(const SourceSelection& selection, const InstallLayout& layout,
+                        InstallControl* control, InstallJournal* journal,
                         std::string* error) {
   if (selection.game.empty() || selection.update.empty()) {
     *error = "Some of the files that have\nbeen provided are not valid.\n\nPlease make sure all the\nspecified files are correct\nand try again.";
     return false;
   }
 
+  // Start every install attempt from a clean slate: a prior failed or
+  // cancelled attempt may have left a partial/mismatched tree behind, and
+  // reusing it would let stale files leak into the new install.
   std::error_code ec;
+  std::filesystem::remove_all(layout.game, ec);
+  std::filesystem::remove_all(layout.update, ec);
+  RecordInstallRoot(journal, layout.game);
+  RecordInstallRoot(journal, layout.update);
   std::filesystem::create_directories(layout.game, ec);
   std::filesystem::create_directories(layout.update, ec);
   if (ec) {
@@ -698,22 +769,71 @@ bool CopyInstallSources(const SourceSelection& selection, const InstallLayout& l
     return false;
   }
 
-  if (!CopySourceTree(selection.game, layout.game, error) ||
-      !CopyOne(selection.update, kGameLogicPatch, layout.update, error) ||
-      !CopyOne(selection.update, kEntrypointPatch, layout.update, error) ||
-      !CopyDlcSource(selection.dlc, layout, error) ||
-      !PreparePatchedDirectory(layout.game, layout.patched, error)) {
+  if (control && !control->ShouldContinue()) {
+    *error = "Installation was cancelled.";
     return false;
   }
 
-  return ApplyPatchFile(layout.game / kEntrypointXex,
-                        layout.update / kEntrypointPatch,
-                        layout.patched / kPatchedEntrypointXex,
-                        error) &&
-         ApplyPatchFile(layout.game / kGameLogicDll,
-                        layout.update / kGameLogicPatch,
-                        layout.patched / kPatchedGameLogicDll,
-                        error);
+  if (!CopySourceTree(selection.game, layout.game, control, 0.05f, 0.65f, error)) {
+    return false;
+  }
+  if (!CopyOne(selection.update, kGameLogicPatch, layout.update, error) ||
+      !CopyOne(selection.update, kEntrypointPatch, layout.update, error)) {
+    return false;
+  }
+  if (control) {
+    control->SetProgress(0.65f, 0.72f, 1, 1);
+  }
+
+  if (!CopyDlcSource(selection.dlc, layout, control, journal, 0.72f, 0.90f, error)) {
+    return false;
+  }
+
+  if (control && !control->ShouldContinue()) {
+    *error = "Installation was cancelled.";
+    return false;
+  }
+
+  if (!PreparePatchedDirectory(layout.game, layout.patched, journal, error)) {
+    return false;
+  }
+
+  const bool patched = ApplyPatchFile(layout.game / kEntrypointXex,
+                                      layout.update / kEntrypointPatch,
+                                      layout.patched / kPatchedEntrypointXex,
+                                      error) &&
+                       ApplyPatchFile(layout.game / kGameLogicDll,
+                                      layout.update / kGameLogicPatch,
+                                      layout.patched / kPatchedGameLogicDll,
+                                      error);
+  if (control) {
+    control->SetProgress(0.90f, 1.0f, 1, 1);
+  }
+  return patched;
+}
+
+// Result of a background install run. `finished` is the synchronization
+// point: the worker thread writes `failed`/`error`/`journal` before storing
+// it, and the UI thread must not read them until it observes `finished` as
+// true (release/acquire via the atomic).
+struct InstallOutcome {
+  std::atomic<bool> finished{false};
+  bool failed = false;
+  std::string error;
+  InstallJournal journal;
+};
+
+void RunInstallAsync(SourceSelection selection, InstallLayout layout,
+                     std::shared_ptr<InstallControl> control,
+                     std::shared_ptr<InstallOutcome> outcome) {
+  std::string error;
+  if (!CopyInstallSources(selection, layout, control.get(), &outcome->journal, &error)) {
+    EOT_ERROR("[installer-ui] install failed: {}", error);
+    RollbackInstall(outcome->journal);
+    outcome->failed = true;
+    outcome->error = std::move(error);
+  }
+  outcome->finished.store(true);
 }
 
 std::vector<std::filesystem::path> RunNativePicker(bool folder_mode) {
@@ -775,6 +895,14 @@ class InstallerDialog final : public rex::ui::ImGuiDialog {
   }
 
   ~InstallerDialog() override {
+    if (install_thread_ && install_thread_->joinable()) {
+      if (install_control_) {
+        install_control_->cancel_requested.store(true);
+        install_control_->halted.store(false);
+        install_control_->halted.notify_all();
+      }
+      install_thread_->join();
+    }
     StopAudio();
   }
 
@@ -1175,6 +1303,16 @@ class InstallerDialog final : public rex::ui::ImGuiDialog {
     if (page_ != WizardPage::Installing) {
       return;
     }
+    if (install_outcome_ && install_outcome_->finished.load() && !install_finished_) {
+      if (install_thread_ && install_thread_->joinable()) {
+        install_thread_->join();
+      }
+      install_thread_.reset();
+      FinishInstall();
+    }
+    if (install_control_) {
+      install_progress_target_ = install_control_->progress.load();
+    }
     install_progress_ += std::min(install_progress_target_ - install_progress_,
                                   0.25f * ImGui::GetIO().DeltaTime);
     DrawProgressBar(install_progress_);
@@ -1296,7 +1434,17 @@ class InstallerDialog final : public rex::ui::ImGuiDialog {
       EOT_INFO("[installer-ui] message dismissed accepted={} source={}",
                accepted, static_cast<int>(source));
       ClearMessage();
-      if (accepted) {
+      if (source == MessageSource::Back && page_ == WizardPage::Installing) {
+        if (accepted && install_control_) {
+          install_control_->cancel_requested.store(true);
+        }
+        // Regardless of the answer, the install thread must be resumed: it
+        // was halted the moment this confirmation was raised.
+        if (install_control_) {
+          install_control_->halted.store(false);
+          install_control_->halted.notify_all();
+        }
+      } else if (accepted) {
         if (source == MessageSource::Back) {
           is_quitting_ = true;
           BeginDisappear();
@@ -1400,8 +1548,6 @@ class InstallerDialog final : public rex::ui::ImGuiDialog {
       const bool skip = DlcSelectionsEmpty();
       if (!skip) {
         page_ = WizardPage::CheckSpace;
-      } else if (sources_.game.empty()) {
-        BeginDisappear();
       } else {
         ShowMessage("The Identity Crisis Suits DLC\nwas not selected.\n\nAre you sure you want to\nskip this step?",
                     true, MessageSource::Next);
@@ -1430,7 +1576,14 @@ class InstallerDialog final : public rex::ui::ImGuiDialog {
       return;
     }
     if (page_ == WizardPage::Installing) {
+      if (install_control_ && install_control_->cancel_requested.load()) {
+        // Already cancelling; no need to ask again.
+        return;
+      }
       PlaySound("sys_actstg_pausecansel");
+      if (install_control_) {
+        install_control_->halted.store(true);
+      }
       ShowMessage("Are you sure you want to cancel the installation?", true,
                   MessageSource::Back);
       return;
@@ -1530,8 +1683,6 @@ class InstallerDialog final : public rex::ui::ImGuiDialog {
     }
     static constexpr uintmax_t kPatchScratchBytes = 512ull * 1024ull * 1024ull;
     return cached_game_size_ + cached_update_size_ + kPatchScratchBytes +
-           SourceFileSize(sources_.game, kEntrypointXex) +
-           SourceFileSize(sources_.game, kGameLogicDll) +
            (sources_.dlc.empty() ? 0 : SourceTotalSize(sources_.dlc));
   }
 
@@ -1546,25 +1697,34 @@ class InstallerDialog final : public rex::ui::ImGuiDialog {
     PlaySound("sys_actstg_pausedecide");
     install_start_time_ = ImGui::GetTime();
     install_progress_ = 0.0f;
-    install_progress_target_ = 0.25f;
+    install_progress_target_ = 0.0f;
     install_finished_ = false;
     install_failed_ = false;
     install_error_.clear();
 
-    std::string error;
     EOT_INFO("[installer-ui] installing sources game={} update={} dlc={} target={}",
              sources_.game.string(), sources_.update.string(), sources_.dlc.string(),
              result_.install_layout.root.string());
-    install_progress_target_ = 0.65f;
-    if (!CopyInstallSources(sources_, result_.install_layout, &error)) {
-      install_failed_ = true;
-      install_error_ = error;
-      EOT_ERROR("[installer-ui] install failed: {}", error);
-    } else {
+
+    install_control_ = std::make_shared<InstallControl>();
+    install_outcome_ = std::make_shared<InstallOutcome>();
+    install_thread_ = std::make_unique<std::thread>(
+        RunInstallAsync, sources_, result_.install_layout, install_control_, install_outcome_);
+  }
+
+  // Called once on the UI thread after the background copy thread has been
+  // joined. Config/cvar access here is intentionally kept off the worker
+  // thread since rex::cvar isn't meant to be touched concurrently.
+  void FinishInstall() {
+    install_failed_ = install_outcome_->failed;
+    install_error_ = install_outcome_->error;
+
+    if (!install_failed_) {
       InstallManifest manifest;
       manifest.installed = true;
       manifest.runtime_root = result_.install_layout.game.string();
       manifest.note = "Installed by the ReEoT first-run installer.";
+      std::string error;
       if (!SaveInstallManifest(result_.install_layout.manifest, manifest, &error)) {
         install_failed_ = true;
         install_error_ = error;
@@ -1652,6 +1812,9 @@ class InstallerDialog final : public rex::ui::ImGuiDialog {
   float install_progress_target_ = 0.0f;
   bool install_finished_ = false;
   bool install_failed_ = false;
+  std::unique_ptr<std::thread> install_thread_;
+  std::shared_ptr<InstallControl> install_control_;
+  std::shared_ptr<InstallOutcome> install_outcome_;
   bool has_appeared_ = false;
   bool is_disappearing_ = false;
   bool is_quitting_ = false;
