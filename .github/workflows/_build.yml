@@ -1,0 +1,460 @@
+name: Build reeot
+
+on:
+  workflow_call:
+    inputs:
+      publish_mode:
+        description: "'artifact' for CI workflow-artifact, 'release' for GitHub release"
+        required: true
+        type: string
+      artifact_name:
+        description: "Artifact name when publish_mode is 'artifact'"
+        required: false
+        type: string
+        default: ""
+
+env:
+  # This nightly's release assets all report their CMake package version as
+  # 0.8.0.0 (version stamping is broken on this fork past nightly-20260421)
+  # even though generated/rexglue.cmake requires 0.8.1+. Pin REXSDK_VERSION
+  # to force an EXACT-match find_package() instead of the default >=0.8.1
+  # check, which would otherwise hit a FATAL_ERROR at configure time.
+  REXSDK_TAG: nightly-20260710-f496e67a
+  REXSDK_VERSION: 0.8.0.0
+  REXSDK_REPO: Graine25/rexglue-sdk
+  REXSDK_WINDOWS_ASSET: rexglue-sdk-0.8.0.0-dev.unknown-win-amd64.zip
+  REXSDK_LINUX_ASSET: rexglue-sdk-0.8.0.0-dev.unknown-linux-amd64.zip
+  REXSDK_MAC_ASSET: rexglue-sdk-0.8.0.0-dev.unknown-mac-arm64.zip
+  ASSETS_REPO: Graine25/assets
+  ASSET_REF: main
+  # reeot needs two guest binaries for codegen (see reeot_manifest.toml):
+  #   entrypoint XEX  -> assets/Default.xex
+  #   GameLogic DLL   -> assets/Data/GameLogic.dll
+  # Both live under reeot/ in the private assets repo.
+  XEX_SOURCE_PATH: reeot/assets/Default.xex
+  XEX_LOCAL_PATH: assets/Default.xex
+  DLL_SOURCE_PATH: reeot/assets/Data/GameLogic.dll
+  DLL_LOCAL_PATH: assets/Data/GameLogic.dll
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install LLVM, CMake, Ninja
+        run: choco install llvm cmake ninja -y
+
+      - name: Set up sccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          variant: sccache
+          key: win-amd64
+
+      - name: Download ReXGlue SDK (${{ env.REXSDK_TAG }})
+        shell: pwsh
+        run: |
+          $url = "https://github.com/${{ env.REXSDK_REPO }}/releases/download/${{ env.REXSDK_TAG }}/${{ env.REXSDK_WINDOWS_ASSET }}"
+          Invoke-WebRequest -Uri $url -OutFile sdk.zip
+          Expand-Archive -Path sdk.zip -DestinationPath sdk
+
+      - name: Checkout private assets
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.ASSETS_REPO }}
+          ref: ${{ env.ASSET_REF }}
+          token: ${{ secrets.ASSETS_TOKEN }}
+          path: private-assets
+          lfs: true
+          sparse-checkout: |
+            ${{ env.XEX_SOURCE_PATH }}
+            ${{ env.DLL_SOURCE_PATH }}
+
+      - name: Copy required assets for codegen
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path (Split-Path "${{ env.XEX_LOCAL_PATH }}") | Out-Null
+          New-Item -ItemType Directory -Force -Path (Split-Path "${{ env.DLL_LOCAL_PATH }}") | Out-Null
+          $pairs = @(
+            @{ Src = "private-assets/${{ env.XEX_SOURCE_PATH }}"; Dst = "${{ env.XEX_LOCAL_PATH }}" },
+            @{ Src = "private-assets/${{ env.DLL_SOURCE_PATH }}"; Dst = "${{ env.DLL_LOCAL_PATH }}" }
+          )
+          foreach ($p in $pairs) {
+            Copy-Item $p.Src $p.Dst
+            $size = (Get-Item $p.Dst).Length
+            Write-Host "Fetched $($p.Src) -> $($p.Dst) ($size bytes)"
+            if ($size -lt 1048576) {
+              throw "Fetched asset $($p.Dst) is smaller than 1 MiB - fetch likely failed"
+            }
+          }
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $sdk = Join-Path $PWD "sdk/win-amd64"
+          cmake --preset win-amd64-release "-DCMAKE_PREFIX_PATH=$sdk" "-DREXSDK_VERSION=${{ env.REXSDK_VERSION }}" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+
+      - name: Codegen
+        run: cmake --build --preset win-amd64-release --target reeot_codegen
+
+      - name: Reconfigure (pick up generated/sources.cmake)
+        shell: pwsh
+        run: |
+          $sdk = Join-Path $PWD "sdk/win-amd64"
+          cmake --preset win-amd64-release "-DCMAKE_PREFIX_PATH=$sdk" "-DREXSDK_VERSION=${{ env.REXSDK_VERSION }}" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+
+      - name: Build
+        run: cmake --build --preset win-amd64-release -j
+
+      - name: sccache stats
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+      - name: Stage workflow artifact
+        if: inputs.publish_mode == 'artifact'
+        shell: pwsh
+        run: |
+          $out = "artifact-staging/windows-amd64"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $buildDir = "out/build/win-amd64-release"
+          Copy-Item "$buildDir/reeot.exe" $out
+          Copy-Item "reeot.toml" $out
+          Get-ChildItem "$buildDir" -Filter *.dll -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName $out }
+
+      - name: Upload workflow artifact
+        if: inputs.publish_mode == 'artifact'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.artifact_name }}-windows-amd64
+          path: artifact-staging/windows-amd64/*
+          if-no-files-found: error
+
+      - name: Stage release assets
+        if: inputs.publish_mode == 'release'
+        shell: pwsh
+        run: |
+          $out = "release-assets/windows-amd64"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $buildDir = "out/build/win-amd64-release"
+          Copy-Item "$buildDir/reeot.exe" $out
+          Copy-Item "reeot.toml" $out
+          Get-ChildItem "$buildDir" -Filter *.dll -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName $out }
+          Get-ChildItem "$buildDir" -Filter *.pdb -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName $out }
+
+      - name: Upload staged release assets
+        if: inputs.publish_mode == 'release'
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-windows-amd64
+          path: release-assets/windows-amd64/*
+          if-no-files-found: error
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Clang 20
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg lsb-release
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20
+          sudo apt-get install -y clang-20 lld-20
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list http://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential git curl unzip autoconf python3.12-venv \
+            libgtk-3-dev libx11-xcb-dev wine vulkan-sdk
+
+      - name: Set up sccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          variant: sccache
+          key: linux-amd64
+
+      - name: Download ReXGlue SDK (${{ env.REXSDK_TAG }})
+        shell: bash
+        run: |
+          url="https://github.com/${{ env.REXSDK_REPO }}/releases/download/${{ env.REXSDK_TAG }}/${{ env.REXSDK_LINUX_ASSET }}"
+          curl -fsSL "$url" -o sdk.zip
+          unzip -q sdk.zip -d sdk
+
+      - name: Checkout private assets
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.ASSETS_REPO }}
+          ref: ${{ env.ASSET_REF }}
+          token: ${{ secrets.ASSETS_TOKEN }}
+          path: private-assets
+          lfs: true
+          sparse-checkout: |
+            ${{ env.XEX_SOURCE_PATH }}
+            ${{ env.DLL_SOURCE_PATH }}
+
+      - name: Copy required assets for codegen
+        shell: bash
+        run: |
+          copy_asset() {
+            local src="private-assets/$1"
+            local dst="$2"
+            mkdir -p "$(dirname "$dst")"
+            cp "$src" "$dst"
+            local size
+            size="$(stat -c%s "$dst")"
+            echo "Fetched $src -> $dst ($size bytes)"
+            if [ "$size" -lt 1048576 ]; then
+              echo "Fetched asset $dst is smaller than 1 MiB - fetch likely failed" >&2
+              exit 1
+            fi
+          }
+          copy_asset "${{ env.XEX_SOURCE_PATH }}" "${{ env.XEX_LOCAL_PATH }}"
+          copy_asset "${{ env.DLL_SOURCE_PATH }}" "${{ env.DLL_LOCAL_PATH }}"
+
+      - name: Configure
+        shell: bash
+        run: |
+          sdk="$PWD/sdk/linux-amd64"
+          cmake --preset linux-amd64-release "-DCMAKE_PREFIX_PATH=$sdk" "-DREXSDK_VERSION=${{ env.REXSDK_VERSION }}" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+
+      - name: Codegen
+        shell: bash
+        run: cmake --build --preset linux-amd64-release --target reeot_codegen
+
+      - name: Reconfigure (pick up generated/sources.cmake)
+        shell: bash
+        run: |
+          sdk="$PWD/sdk/linux-amd64"
+          cmake --preset linux-amd64-release "-DCMAKE_PREFIX_PATH=$sdk" "-DREXSDK_VERSION=${{ env.REXSDK_VERSION }}" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+
+      - name: Build
+        shell: bash
+        run: cmake --build --preset linux-amd64-release -j
+
+      - name: Inspect binary
+        shell: bash
+        run: |
+          file out/build/linux-amd64-release/reeot
+          ldd out/build/linux-amd64-release/reeot
+
+      - name: Stage Linux artifacts
+        shell: bash
+        run: |
+          pkg="dist/reeot-linux-amd64"
+          mkdir -p "$pkg"
+          buildDir="out/build/linux-amd64-release"
+          sdk="$PWD/sdk/linux-amd64"
+
+          copy_release_lib() {
+            local name="$1"
+            local source_dir
+            for source_dir in "$buildDir" "$sdk/lib" "$sdk/bin"; do
+              [ -e "$source_dir/$name" ] || continue
+              cp -L -f "$source_dir/$name" "$pkg/"
+              return 0
+            done
+            echo "Missing ${name} in release build, SDK lib, or SDK bin directories" >&2
+            exit 1
+          }
+
+          cp "$buildDir/reeot" "$pkg/reeot"
+          cp reeot.toml "$pkg/reeot.toml"
+          copy_release_lib "librexruntime.so"
+          copy_release_lib "libTracyClient.so"
+
+          find "$pkg" -maxdepth 1 -type f -printf "%f\n" | sort
+
+      - name: Package Linux executable
+        shell: bash
+        run: |
+          tar -C dist -czf dist/reeot-linux-amd64.tar.gz reeot-linux-amd64
+
+      - name: sccache stats
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+      - name: Upload workflow artifact
+        if: inputs.publish_mode == 'artifact'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.artifact_name }}-linux-amd64
+          path: dist/reeot-linux-amd64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload staged release assets
+        if: inputs.publish_mode == 'release'
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-amd64
+          path: dist/reeot-linux-amd64.tar.gz
+          if-no-files-found: error
+
+  build-mac:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install LLVM, CMake, Ninja
+        shell: bash
+        run: brew install llvm cmake ninja
+
+      - name: Set up sccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          variant: sccache
+          key: mac-arm64
+
+      - name: Download ReXGlue SDK (${{ env.REXSDK_TAG }})
+        shell: bash
+        run: |
+          url="https://github.com/${{ env.REXSDK_REPO }}/releases/download/${{ env.REXSDK_TAG }}/${{ env.REXSDK_MAC_ASSET }}"
+          curl -fsSL "$url" -o sdk.zip
+          unzip -q sdk.zip -d sdk
+
+      - name: Checkout private assets
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.ASSETS_REPO }}
+          ref: ${{ env.ASSET_REF }}
+          token: ${{ secrets.ASSETS_TOKEN }}
+          path: private-assets
+          lfs: true
+          sparse-checkout: |
+            ${{ env.XEX_SOURCE_PATH }}
+            ${{ env.DLL_SOURCE_PATH }}
+
+      - name: Copy required assets for codegen
+        shell: bash
+        run: |
+          copy_asset() {
+            local src="private-assets/$1"
+            local dst="$2"
+            mkdir -p "$(dirname "$dst")"
+            cp "$src" "$dst"
+            local size
+            size="$(stat -f%z "$dst")"
+            echo "Fetched $src -> $dst ($size bytes)"
+            if [ "$size" -lt 1048576 ]; then
+              echo "Fetched asset $dst is smaller than 1 MiB - fetch likely failed" >&2
+              exit 1
+            fi
+          }
+          copy_asset "${{ env.XEX_SOURCE_PATH }}" "${{ env.XEX_LOCAL_PATH }}"
+          copy_asset "${{ env.DLL_SOURCE_PATH }}" "${{ env.DLL_LOCAL_PATH }}"
+
+      - name: Configure
+        shell: bash
+        run: |
+          sdk="$PWD/sdk/mac-arm64"
+          cmake --preset mac-arm64-release "-DCMAKE_PREFIX_PATH=$sdk" "-DREXSDK_VERSION=${{ env.REXSDK_VERSION }}" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+
+      - name: Codegen
+        shell: bash
+        run: cmake --build --preset mac-arm64-release --target reeot_codegen
+
+      - name: Reconfigure (pick up generated/sources.cmake)
+        shell: bash
+        run: |
+          sdk="$PWD/sdk/mac-arm64"
+          cmake --preset mac-arm64-release "-DCMAKE_PREFIX_PATH=$sdk" "-DREXSDK_VERSION=${{ env.REXSDK_VERSION }}" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+
+      - name: Build
+        shell: bash
+        run: cmake --build --preset mac-arm64-release -j
+
+      - name: Inspect binary
+        shell: bash
+        run: |
+          file out/build/mac-arm64-release/reeot
+          otool -L out/build/mac-arm64-release/reeot
+
+      - name: Stage macOS artifacts
+        shell: bash
+        run: |
+          pkg="dist/reeot-macos-arm64"
+          mkdir -p "$pkg"
+          buildDir="out/build/mac-arm64-release"
+          sdk="$PWD/sdk/mac-arm64"
+
+          copy_release_lib() {
+            local name="$1"
+            local source_dir
+            for source_dir in "$buildDir" "$sdk/lib" "$sdk/bin"; do
+              [ -e "$source_dir/$name" ] || continue
+              cp -L -f "$source_dir/$name" "$pkg/"
+              return 0
+            done
+            echo "Missing ${name} in release build, SDK lib, or SDK bin directories" >&2
+            exit 1
+          }
+
+          cp "$buildDir/reeot" "$pkg/reeot"
+          cp reeot.toml "$pkg/reeot.toml"
+          copy_release_lib "librexruntime.dylib"
+          copy_release_lib "libTracyClient.dylib"
+
+          find "$pkg" -maxdepth 1 -type f -exec basename {} \; | sort
+
+      - name: Package macOS executable
+        shell: bash
+        run: |
+          tar -C dist -czf dist/reeot-macos-arm64.tar.gz reeot-macos-arm64
+
+      - name: sccache stats
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+      - name: Upload workflow artifact
+        if: inputs.publish_mode == 'artifact'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.artifact_name }}-macos-arm64
+          path: dist/reeot-macos-arm64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload staged release assets
+        if: inputs.publish_mode == 'release'
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-macos-arm64
+          path: dist/reeot-macos-arm64.tar.gz
+          if-no-files-found: error
+
+  publish-release:
+    if: inputs.publish_mode == 'release'
+    needs:
+      - build-windows
+      - build-linux
+      - build-mac
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download staged release assets
+        uses: actions/download-artifact@v6
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
