@@ -42,6 +42,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install LLVM, CMake, Ninja
         run: choco install llvm cmake ninja -y
@@ -159,6 +161,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install Clang 20
         shell: bash
@@ -307,10 +311,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install LLVM, CMake, Ninja
         shell: bash
-        run: brew install llvm cmake ninja
+        run: brew install llvm cmake ninja molten-vk
 
       - name: Set up sccache
         uses: hendrikmuhs/ccache-action@v1.2.22

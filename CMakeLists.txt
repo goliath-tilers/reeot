@@ -3,7 +3,11 @@
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
-project(reeot LANGUAGES C CXX OBJC)
+if(APPLE)
+    project(reeot LANGUAGES C CXX OBJC)
+else()
+    project(reeot LANGUAGES C CXX)
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
