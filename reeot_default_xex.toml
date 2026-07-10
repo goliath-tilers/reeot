@@ -6,8 +6,10 @@
 # Run codegen with the manifest: rexglue codegen reeot_manifest.toml
 
 project_name = "reeot"
-file_path = "assets/default.xex"
-out_directory_path = "generated/default_xex"
+file_path = "assets/Default.xex"
+patch_file_path = "assets/Update/Default.xexp"
+patched_file_path = "assets/Default_Patched.xex"
+out_directory_path = "generated/default"
 
 [rexcrt]
 # Heap
@@ -1823,6 +1825,7 @@ strcpy_s           = 0x8233E498
 0x82342C18 = { name = "eot_Thread_GetTLS_OrDefault" }
 0x822471C8 = { name = "eot_Thread_SetAffinity" }
 0x8224B8E0 = { name = "eot_Thread_SleepMs" }
+0x82247460 = { name = "eot_Sleep" }
 0x8233BEA8 = { name = "eot_threadstartex" }
 0x82247388 = { name = "eot_WaitForSingleObject" }
 0x8224B688 = { name = "eot_WaitForSingleObjectEx" }

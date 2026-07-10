@@ -7,11 +7,15 @@ game_root = "assets"
 
 [entrypoint]
 file_path = "assets/Default.xex"
+patch_file_path = "assets/Update/Default.xexp"
+patched_file_path = "assets/Default_Patched.xex"
 out_directory_path = "generated/default"
 includes = ["reeot_default_xex.toml"]
 
 [[modules]]
-guest_path = "data/gamelogic.dll"
+guest_path = "Data/GameLogic.dll"
 file_path = "assets/Data/GameLogic.dll"
+patch_file_path = "assets/Update/Data/GameLogic.dllp"
+patched_file_path = "assets/Data/GameLogic_Patched.dll"
 out_directory_path = "generated/gamelogic"
 includes = ["reeot_gamelogic.toml"]

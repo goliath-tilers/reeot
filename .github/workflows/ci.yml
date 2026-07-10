@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/_build.yml
+    with:
+      publish_mode: artifact
+      artifact_name: reeot-${{ github.sha }}
+    secrets: inherit
