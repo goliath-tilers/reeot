@@ -67,3 +67,6 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# scratch / experimental, never tracked
+/thirdparty/flow animation/
